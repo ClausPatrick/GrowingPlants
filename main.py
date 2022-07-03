@@ -1,317 +1,332 @@
+#imports
+
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%% WORLD CLASS %%%%%%%%%%%%%%%%%%%%%%%%%%#
 class World:
     surround_vector = np.array(((0,1), (1,1), (1,0), (1,-1), (0,-1), (-1,-1), (-1,0), (-1,1)))
     surround_org_vector  = np.array(((0, 0), (0,1), (1,1), (1,0), (1,-1), (0,-1), (-1,-1), (-1,0), (-1,1)))
     def __init__(self, size=(128, 128)):
+        #size = (size[0]+1, size[1]+1)
         self.role = 'world'
+        assert size[0] == size[1], 'Aspect ratio other than 1:1 not implemented yet.'
         self.size = size
+        self.size_prod = size[0]*size[1]
+        self.cell_list = {}
         self.population_dict = {}
+        self._population_counter = 0
         self.grit = {}
-        self.grit['root'] = np.zeros(size).astype(int)
+        self.count_of_resources = 4
         self.grit['cell'] = np.zeros(size).astype(int)
-        self.grit['food'] = np.ones(size).astype(int)    
+        self.grit['resources'] = np.ones((size[0], size[1], self.count_of_resources)).astype(int)    
         self.grit['cell_alive'] = np.zeros(size).astype(int)
-        self.grit['root_alive'] = np.zeros(size).astype(int)
+        self.grit['gene_id'] = {}
+        self.gene_pool = np.zeros((self.size[0], self.size[1], self.size_prod)).astype(int)
         template = np.hstack((np.arange(size[0]/2), np.arange(size[0]/2)[::-1]))
         v = ((template - size[0] / 2) / (size[0] ) + 1).reshape(1, -1)
         h = ((template - size[1] / 2) / (size[1] ) + 1).reshape(1, -1)
-        self.grit['food'] = (v.T @ h) * 2
-    
-    def update(self, obj, pos, mode='initiate'):
-        if mode == 'initiate':
-            l = obj.alive
-            i = obj.index
-            r = obj.role
-            self.grit[r+'_alive'][pos] = l
-            try:
-                self.grit[r][pos] = i
-            except Exception as e:
-                print(f'update_grit:: Error: {e}, {r}')
-        else:
-            print(f'W:: update: mode not parsed: {mode}')
-        '''
-        update_grit:: Error: name 'role' is not defined, cell
-        update_grit:: Error: name 'role' is not defined, root
-        '''        
-    
+        for r in range(self.count_of_resources):
+            self.grit['resources'][:,:,r] = (v.T @ h) * 2
+        self.extinction = False
+        self.random_spots = np.random.permutation(self.size_prod).reshape(self.size)
 
-    def spawn_root(self):
-        index = len(self.population_dict) + 1
-        self.population_dict[index] = Root(np.random.randint(w.size, size=2))
-        
     def tick(self):
-        for i, root in self.population_dict.items():
-            root.tick()
-            
-    def __str__(self):
-        s = ''
-        for index, root in self.population_dict.items():
-            s = s + f'Root {index}, food: {root.food}, age: {root.age}, cells: {root.live_cells}, live: {root.alive}\n'   
-        return s
+        population_copy = self.population_dict.copy()
+        for k, v in population_copy.items():
+            if v.alive:
+                v.tick()
+                    
+    def spawn(self, parent=None, role='cell', position=None):
+        new_index = self._population_counter 
+        if new_index > self.size_prod:
+            print(f'World is overpopulated')
+            return
+        #print(f'spawn1:: posiition: \n{position}')
+        if position == None and parent == None:
+            hH = (w.size[0] // 3) * 2
+            hL = (w.size[1] // 3)
+            p = ((hH, hL), (hL, hH), (hH, hH), (hL, hL))
+            position = p[new_index%4]
+            parent = 0         
+        if position == 'random':
+            rand_pos = np.where(self.random_spots == self._population_counter)            
+            position = (int(rand_pos[0]), int(rand_pos[1]))            
+        self._population_counter = self._population_counter + 1
+        self.population_dict[new_index] = Cell(parent=parent, position=position)
 
-#%%%%%%%%%%%%%%%%%%%%%%%%%% ROOT CLASS %%%%%%%%%%%%%%%%%%%%%%%%%%#
-
-class Root:
-    _counter = 0
-    def __init__(self, initial_position):
-        self.role = 'root'
-        self.position = tuple(initial_position)
-        Root._counter = Root._counter + 1
-        self.index = Root._counter
-        w.grit['root'][tuple(initial_position)] = self.index
-        w.population_dict[self.index] = self
-        self.cell_list = {}
-        self.alive = 1
-        self.food = 100
-        self.parent = None
-        self.cost = 0
-        self.total_cell_food = 0
-        self.age = 0
-        self.live_cells = 1
-        self.state = 3
+    def get_new_genes(self, obj):
+        new_genes = np.random.randint(255, size=self.size_prod)
+        pos = obj.position
+        self.gene_pool[pos[0], pos[1], :] = new_genes
+        return new_genes
         
         
-    def tick(self):
-        if self.alive:
-            self.metabolise()
-            self.grow()
-    
-    @property
-    def gather_surrounding(self):
-        data = {}   
-        for i, cell in self.cell_list.items():
-            if cell.fertile:                
-                surround_per_cell = cell.position + w.surround_vector # vector of surround positions (8,1)
-                limits = (0, w.size[0])
-                pruned = np.delete(surround_per_cell, np.where(surround_per_cell.T==limits[0]), axis=0)
-                pruned = np.delete(pruned, np.where(pruned.T==limits[1]), axis=0)
-                data['cell_index'] = cell.index
-                data['cell_position'] = cell.position
-                data['other_root'] = w.grit['root'][tuple(pruned.T)]
-                data['other_cell'] = w.grit['cell'][tuple(pruned.T)]
-                data['other_position'] = pruned
-        return data
+    def get_genes(self, pos):
+        #print(f'get_genes:: obj:{obj}, type:{type(obj)}')
+        #logging.debug(f'Object {self.role}:: gene pos:{pos}.')
+        genes = self.gene_pool[pos[0], pos[1], :]
+        #print(f'get_genes:: genes:{genes}')
+        return genes
 
-    @property
-    def choose_cell_position(self):
-        root_vector = self.surrounding_data['other_root']        
-        mask = np.where(root_vector == self.index, 0, 1)
-        new_data = {}
-        if np.any(mask):
-            choices = len(mask)
-            prob_abs = np.ones(choices) * mask
-            prob_vec = prob_abs / np.sum(prob_abs)
-            step_choice = np.random.choice(choices, p=prob_vec)
-            data = self.surrounding_data
-            new_data['cell_index'] = data['cell_index']
-            new_data['cell_position'] = tuple(data['cell_position'])
-            new_data['other_root'] = data['other_root'][step_choice]
-            new_data['other_cell'] = data['other_cell'][step_choice]
-            new_data['other_position'] = tuple(data['other_position'][step_choice])
-            #print(f'choose_cell_position:: new_data: \n{new_data}')
-            return new_data
+    def set_genes(self, obj, genes):
+        #print(f'set_genes:: obj:{obj}, type:{type(obj)}')
+        if isinstance(obj, Cell):
+            pos = obj.position
+        elif isinstance(obj, (int, np.int32)):
+            pos = self.cell_list[obj].position 
         else:
-            #print(f'No where to go!')
-            return []
-            
-
-    def metabolise(self):
-        if self.food < 0: #or self.live_cells == 0:
-            self.alive = 0
+            raise TypeError(f'set_genes:: obj:{obj}, type:{type(obj)}')
+        gene_len = len(genes)
+        if gene_len < self.size_prod:
+            genes = list(genes) + [0]*(self.size_prod-gene_len)
         else:
-            self.age = self.age + 1
-            total_cell_food = 0
-            live_cells = 0
-            for i, cell in self.cell_list.items():
-                if cell.alive:
-                    live_cells = live_cells + 1
-                    cell.tick()
-                    total_cell_food = total_cell_food + cell.food
-            self.live_cells = live_cells
-            self.total_cell_food = total_cell_food
-            self.food = self.total_cell_food - self.cost
-            self.cost = 0  
-            
-    def grow(self):
-        self.cost = self.cost + 1
-        self.surrounding_data = self.gather_surrounding
-        if len(self.surrounding_data):
-            data = self.choose_cell_position
-            #print(f'grow:: data: {data}')
-            if not len(data):
-                #print(f'grow:: growth inhibited. Pos: {self.position}, ix: {self.index}\n')
-                #print(f'grow:: data: {data}\n')
-                return
-            c = Cell(data, self)
-            next_step = data['other_position']             
-            #print(f'grow:: Pos: {self.position}, ix: {self.index}')
-            #print(f'grow:: next_step: {next_step}')
-        else:
-            #print(f'first cell on pos {self.position}')
-            next_step = self.position
-            c = Cell([], self)
-        self.cell_list[c.index] = c
-        w.update(c, tuple(next_step), mode='initiate')
-        w.update(self, tuple(next_step), mode='initiate')
-        #w.grit['cell'][tuple(next_step)] = c.index
-        #w.grit['root'][tuple(next_step)] = self.index
+            genes = list(genes)
+        self.gene_pool[pos[0], pos[1], :] = genes
         
-    
-    def __str__(self):
-        s = f'Root:: {self.index}\n'
-        for i, cell in self.cell_list.items():
-            if cell.alive:
-                s = s + f'Cell:: {cell.index}, food: {cell.food}, victims: {cell.victim_list}, state: {cell.state}, live:{cell.alive}\n'
-        return s
-    
-#%%%%%%%%%%%%%%%%%%%%%%%%%% CELL CLASS %%%%%%%%%%%%%%%%%%%%%%%%%%#
+        
+    def activate(self, obj):
+        obj_index = obj.index
+        if isinstance(obj, Cell):
+            self.cell_list[obj_index] = obj
+            obj_position = obj.position
+            self.grit['cell_alive'][obj_position] = 1
+            self.grit['cell'][obj_position] = obj_index
+            self.grit['gene_id'][obj.position] = obj.gene_id
+            self.set_genes(obj, obj.gene_id)
 
-FOOD_DEATH_THRESHOLD = 0.001
-MATURITY_AGE = 20
 
+            
+GENE_SIZE = 8        
 class Cell:
+    _gene_blueprint = np.random.randint(255, size=GENE_SIZE)
     _counter = 0
-    def __init__(self, data=None, root=None):
+    def __init__(self, parent=None, data=None, position=None, from_cell=False):
         '''Arg data should be dict'''
         Cell._counter = Cell._counter +  1
         self.role = 'cell'
         self.index = Cell._counter
-        self.food = 1
+        self.food = 1 #+ np.random.randint(100, size=(1))
+        self.food_budged = (0,) * w.count_of_resources
         self.alive = True
-        self.parent = 0
-        self.dynasty = set()
-        self.dynasty.add(self.index)
-        self.old_dynasty = set()
-        #self.lineage = [] # Contains alive values for all cells in dynasty
+        self.parent = 0                
+        self.dynasty = set() # Contains all Cell indices this Cell instance originated from.
+        self.dynasty.add(self.index) 
+        self.old_dynasty = set() # Upon root connection loss dynasty dict will be purged into this.
         self.age = 1
-        self.root = root
-        self.root_assumption = False
-        self.root_connection = True
         self.state = 4
-        self._state = 1.
-        self.fertile = False
-        self.victim_list = []
-        self.data = {}
-        self.data['friendly_neighbours'] = set()
-        
-        
-        if len(data): # Second+ generation:
-            self.position = data['other_position']
-            other_cell_index = data['cell_index']
-            other_root_index = data['other_root']
-            #print(f'other_cell_index:{other_cell_index}, other_root_index:{other_root_index}')
-            assert other_cell_index in root.cell_list, f"Cell__init__:: Error: i:{self.index}, data: {data}, \n{root.cell_list}"
-            self.parent = root.cell_list[data['cell_index']]
-            #print(f'Cell__init__:: Error: {e}, i:{self.index}, data: {data}') 
-                
-                
-            self.parent_index = data['cell_index']
-            self.parent_position = data['cell_position']
-            #print(f'Cell:: {self.index}, parent: {self.parent_index}, {self.parent.dynasty}')
-            self.dynasty.update(self.parent.dynasty) # Merge all parents ancestors.
-            self.parent.food = self.parent.food / 2
-            self.current_occupier = (data['other_root'], data['other_cell'])
-            if self.current_occupier[0]:
-                #print(f'current occupier: {self.current_occupier}, data: \n{data}')
-                victim = w.population_dict[self.current_occupier[0]]
-                vicitm_cell = victim.cell_list[self.current_occupier[1]]
-                self.consume(victim, vicitm_cell)
-                
-        if not len(data): # First of a kind!
-            self.position = root.position
-            self.parent = root
-            self.parent_index = root.index
-            self.parent_position = root.position
-            self.root_assumption = True
+        self._state = 1.  # Progress track keeper to shift through phases
+        self.fertile = False # New cells can only grow from cells that are fertile
+        self.victim_list = [] # Keep track of what gets eaten.
+        self.data_surrounding = {} # Pertinent for new root election.
+        #self.data_surrounding['friendly_neighbours'] = set()
+        if not from_cell:
+            assert position != None
+            self.position = position
+            self.gene_id = self._express_gene_id
+            #self.gather_surrounding()
+              
             
-    def consume(self, victim, vicitm_cell):
-        self.food = (self.food + 1) ** np.max((2, vicitm_cell.food + 1))
-        vicitm_cell.alive = 0
-        victim.cost = (victim.cost+1) * 2
-        self.victim_list.append((victim.index, vicitm_cell.index))
+        if from_cell:
+            if isinstance(parent, Cell):
+                self.parent = parent
+                self.dynasty.update(parent.dynasty)
+                #self.gather_surrounding()
+                    
+        self.surround_per_cell = self.position + w.surround_vector
+        limits = (0, w.size[0], w.size[1])
+        pruned = self.surround_per_cell[:]
+        pruned = np.delete(pruned, np.where(pruned<limits[0])[0], axis=0) # Dropping lower bounds, V&H
+        pruned = np.delete(pruned, np.where(pruned[:, 0]>=limits[1])[0], axis=0)  # Dropping upper bounds, V
+        self.surround_vector = np.delete(pruned, np.where(pruned[:, 1]>=limits[2])[0], axis=0)  # Dropping upper bounds, H
+
+        logging.debug(f'Object {self.role} created at {position}.')
+        w.cell_list[self.index] = self
+        w.activate(self)
         
     def tick(self):
-        self.age = self.age + 1
-        self.check_phase()
-        try:
-            self.food = np.max((0, w.grit['food'][tuple(self.position)] * np.min((2 - (self.age / MATURITY_AGE)), 0)))
-        except Exception as e:
-            raise ValueError(f"pos:{self.position}, age:{self.age}, wgfp:{w.grit['food'][tuple(self.position)]}")
-        if self.state < 4 and self.state >= 3:
-            self.fertile = True
-        if self.state < 3:
-            self.fertile = False
+        self.gather_surrounding()
+        sensory_dict = self.process_sensory
+        peers_info = sensory_dict['peers_info_exchange']
+        peers_food = sensory_dict['peers_food_exchange']
+        potential_mates = sensory_dict['peers_mate_potential']
+        potential_victims = sensory_dict['peers_eat_potential']
+        self.sensory_dict = sensory_dict
+        if len(peers_info):
+            self.share_info(peers_info)
+        if len(peers_food):
+            self.share_info(peers_food)
+        if len(potential_mates):
+            self.mate(potential_mates)
+        if len(potential_victims):
+            self.eat(potential_victims)
             
-        if not self.lineage: # Test for Lineage. 
-            #print(f'Lost access to ROOT! cell: {self.index}, parent: {self.parent.index}, {self.dynasty}')
-            self.old_dynasty.update(self.dynasty)
-            self.dynasty = set()
-            self.check_neighbours()
-            
-    def check_phase(self):
-        '''Phase depends on age, food, 1/lineage'''   
-        lineage = len(self.old_dynasty) + len(self.dynasty)
-        prob = self.food * (MATURITY_AGE / self.age) * (lineage / 5)
-        prob_vec = ((np.min((1, np.max((0, prob)))), (1 - np.min((1, np.max((0, prob)))))))
-        #print(f'check_phase:: cell:{self.index}, food: {self.food}, age: {self.age}, lineage: {lineage}')
-        p = np.random.choice((-0.5, 1), p=prob_vec)
-        self._state = self._state + p
-        if self._state < 0:
-            self._state = 1
-            self.state = np.max((0, self.state - 1))
-        #print(f'check_phase:: cell:{self.index}, st:{self.state}, s_:{self._state}')
-        
-    def root_elect(self):
-        self.check_neighbours()
-        
-    def check_neighbours(self):
-        data = {}
-        fn = set()
-        surround_per_cell = self.position + w.surround_vector # vector of surround positions (8,1)
-        limits = (0, w.size[0]) # During pruning only positions within grit are passed thorugh.
-        pruned = np.delete(surround_per_cell, np.where(surround_per_cell.T==limits[0]), axis=0) 
-        pruned = np.delete(pruned, np.where(pruned.T==limits[1]), axis=0)
-        o_r = w.grit['root'][tuple(pruned.T)]
-        o_c = w.grit['cell'][tuple(pruned.T)]
-        data['cell_index'] = self.index
-        data['cell_position'] = self.position
-        data['other_root'] = o_r
-        data['other_cell'] = o_c
-        data['other_position'] = pruned
-        
-        fn.add(((self.position), (self.root.index, self.index, self.state, self.age, self.root_connection, self.root_assumption)))
-        prune_mask = np.where(np.array(o_r) != self.root.index)
-        pruned_friendlies_cells = tuple(np.delete(o_c, prune_mask))
-        pruned_friendlies_roots = tuple(np.delete(o_r, prune_mask))
-        pruned_friendlies_pos = tuple(np.delete(pruned, prune_mask, axis=0))
-        for i in zip(pruned_friendlies_pos, pruned_friendlies_roots, pruned_friendlies_cells):
-            other_state = self.root.cell_list[i[2]].state
-            other_age = self.root.cell_list[i[2]].age
-            other_connection = self.root.cell_list[i[2]].root_connection
-            other_assumption = self.root.cell_list[i[2]].root_assumption
-            fn.add((tuple(i[0]),(i[1], i[2], other_state, other_age, other_connection, other_assumption)))    
-        
-        data['friendly_neighbours'] = fn
-        #print(data['friendly_neighbours'])
-        self.surround_data = data
-        neighbours_neighbours = set()
-        for n in pruned_friendlies_cells:
-            neighbours_neighbours.update(self.root.cell_list[n].data['friendly_neighbours'])
-        data['friendly_neighbours'].update(neighbours_neighbours)
-        #print(f'ri:{self.root.index}, i:{self.index}, p:{self.position}, d:\n{data["friendly_neighbours"]}')
-        for i in data['friendly_neighbours']:
-            print(f'fn:\n{i}')
-        print()
-        
+              
     @property
-    def lineage(self):
-        lineagelist = []
-        for o_c in self.dynasty:
-            lineagelist.append(self.root.cell_list[o_c].alive)
-        self.root_connection = all(lineagelist)
-        return self.root_connection
+    def get_peer_data(self):
+        return  {'peers_info_exchange': len(self.sensory_dict['peers_info_exchange']), 
+                'peers_food_exchange': len(self.sensory_dict['peers_food_exchange']), 
+                 'peers_mate_potential': len(self.sensory_dict['peers_mate_potential']), 
+                'peers_eat_potential': len(self.sensory_dict['peers_eat_potential'])}
+
+    @property
+    def process_sensory(self):
+        sensory_dict = {}
+        keys = ('peers_info_exchange',
+                'peers_food_exchange',
+                'peers_mate_potential',
+                'peers_eat_potential')
+        data_col_ix = (8, 9, 10, 11)
+        data = np.array(list(self.data_surrounding.values()), dtype=object )
+        for i, k in zip(data_col_ix, keys):
+            info_ = data[np.where(data[:, i]==1)] # and data[:, 3]>0
+            info = info_[:, 3][np.where(info_[:, 3]>0)] # and data[:, 3]>0
+            sensory_dict[k] = info
+        return sensory_dict
         
-w = World(size=(32, 32))
-w.spawn_root()
-w.spawn_root()
+        
+    def grow(self):        
+        position = self.choose_position
+        w.spawn(parent=self, position=position)
+        logging.debug(f'Object {self.role}::{self.index} Grow at position:{position}.')
     
+    def eat(self, peer_list):
+        logging.debug(f'Object {self.role}::{self.index}.')
+    
+    def mate(self, peer_list):
+        '''Choose one of mates in peer_list based on its features such as:
+        corr, food, age'''
+        print(f'mate::Object {self.role}::{self.index}:: surr:\n{self.data_surrounding}.\n')
+        data = np.array(list(self.data_surrounding.values()), dtype=object )
+        mate_data = data[np.where(data[:, 10])]
+        print(f'mate::Object {self.role}::{self.index}:: mate_data:\n{mate_data}.\n')
+        
+    def choose_position(self):
+        logging.debug(f'Object {self.role}::{self.index}.')       
+        
+    def share_info(self, peer_list):
+        if isinstance(peer_list, (tuple, list, np.ndarray)) and len(peer_list):
+            for c in peer_list:
+                w.cell_list[c].data_surrounding.update(self.data_surrounding)
+                self.data_surrounding.update(w.cell_list[c].data_surrounding) # Lastly, update ourself
+        else:            
+            raise TypeError
+        
+    def share_food(self, peer_list):
+        if isinstance(peer_list, (tuple, list, np.ndarray)) and len(peer_list):           
+            collected_food = self.food            
+            for c in peer_list:
+                collected_food = collected_food + w.cell_list[int(c)].food
+            collected_food = collected_food / len(peer_list)            
+            for c in peer_list:
+                w.cell_list[int(c)].food = collected_food
+        else:            
+            raise TypeError
+                
+
+    def gather_surrounding(self):
+        '''Data from surrounding spots are collected and formatted into dict data_surrounding. 
+        Then all surrounding cell/s data_surrounding dict is merged into own. Extra work is done 
+        to obtain details on the cells surrounding own with the same index. Those are labeled friendly.'''
+        data = {}
+        al = (0, 0, 0, 0, 0) # action_list
+        #limits = (0, w.size[0], w.size[1]) # During pruning only positions within grid are passed thorugh.
+        surrounding = tuple(self.surround_vector.T)
+        other_cells_indices = w.grit['cell'][surrounding]
+        other_cells_genes = w.get_genes(surrounding)
+        #print(f'other_cells_indices:\n{other_cells_indices}\n')
+        for pos, ix, gen in zip(self.surround_vector, other_cells_indices, other_cells_genes):
+            corr = self._check_gene_correlation(gen)
+            al = self.choose_actions(corr)
+            gene_ids = 0
+            corr = 0
+            data_key = tuple(pos)
+            data_val = (pos[0], pos[1], self.index, ix, self.position[0], self.position[1], corr, al[0], al[1], al[2], al[3], al[4])
+            data[data_key] = data_val
+        self.data_surrounding.update(data)
+
+    @property
+    def _express_gene_id(self):
+        _gene_blueprint = w.get_new_genes(self)
+        #logging.debug(f'Object {self.role}::{self.index} gene id:{_gene_blueprint}.')
+        return _gene_blueprint
+
+    def _check_gene_correlation(self, other_gene):
+        #n = len(self.gene_id)
+        n = 8
+        g1 = self.gene_id[:n]
+        
+        g2 = other_gene[:n]
+        if np.any(g2):
+            
+            #assert len(g1) == len(g2)
+            gm1 = np.mean(g1)
+            gm2 = np.mean(g2)
+
+            denom = ((np.mean(g1**2) - gm1**2)**0.5) * ((np.mean(g2**2) - gm2**2)**0.5) 
+            if denom: # This runs almost twice as fast compared to using np.corrcoef for some reason.
+                gene_id_cov = ((g1 - gm1) * (g2 - gm2) ) / denom
+            else:
+                e = f'_check_gene_correlation:: Object {self.role}::{self.index}, g1:{g1}, g2:{g2}, g1:{gm1}, g2:{gm2}'  
+                #logging.error(f'Object {self.role}::{self.index} g1:{g1}, g2:{g2}, g1:{gm1}, g2:{gm2}')
+                raise ValueError(e)
+            gene_id_cov = np.around(np.sum(gene_id_cov) / n, 3)
+        else:
+            gene_id_cov = 0
+        
+        #logging.debug(f'Object {self.role}::{self.index} gene corr:{gene_id_cov}.')
+        return gene_id_cov
+        #print(f'gene_id_cov: {gene_id_cov}')
+
+    def choose_actions(self, corr):
+        '''Input float or list of floats between -1 and 1, output list of BOOLs for actions:
+        (share_info, share_food, mate, eat). Action eat is exclusive from any other action.'''
+        def commit_action_on_affinity(corr):
+            assert corr >= -1 and corr <= 1
+            p = (corr + 1) / 2 # Normalising value from -1~1 to 0~1
+            p_ = p # Second prob value that will change throughout.
+            p_or_n, im_x, fd_x, mt = (0, 0, 0, 0) # Please note the importance of use of underscores.
+            try:
+                p_or_n = np.random.choice((0, 1), p=((1-p_), p_)) # Friend or foe?
+            except ValueError:
+                logging.error(f'corr:: {corr}, p:{p_}.')
+                raise ValueError
+            p_ = p_**2 
+            im_x = np.random.choice((0, 1), p=((1-p_), p_)) # Sharing information?
+            p_ = p_**2
+            fd_x = np.random.choice((0, 1), p=((1-p_), p_)) # Sharing food?
+            p_ = p_**2
+            mt = np.random.choice((0, 1), p=((1-p_), p_)) # Potential mate?
+            p_e = (1-p_or_n) * (1-p)
+            eat = np.random.choice((0, 1), p=((1-p_e), p_e)) # Potential dinner?
+            #print(f"commit_action_on_affinity:: corr:{corr}, p_e:{p_e}, {(p_or_n, im_x, fd_x, mt, eat)}")
+            return (p_or_n, im_x, fd_x, mt, eat)
+        if isinstance(corr, (list, tuple)):
+            committed = []
+            for p_c in corr:
+                committed.append(commit_action_on_affinity(p_c))
+            return np.array(committed)
+        if isinstance(corr, (int, float)):
+            committed = commit_action_on_affinity(corr)
+            return committed       
+        
+    def __str__(self):
+        s = f'{self.role}::{self.index}::{self.position}::food:'
+        s = s + f'{self.food}:: sur dict len:{len(self.data_surrounding)}'   
+        s = s + f':: peers:{self.get_peer_data}'              
+        return s
+
+w = World(size=(8, 8))
+for i in range(63):
+    w.spawn(position='random')
+
+TEST = 2
+for t in range(TEST):
+    w.tick()
+
+for k, v in w.cell_list.items():
+    print(v)
+
+fig, ax = plt.subplots()
+
+im = ax.imshow(w.grit['cell'], cmap='hot', interpolation='nearest')
+ax.grid(visible=False)
+plt.show()      
