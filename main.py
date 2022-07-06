@@ -14,20 +14,34 @@ class World:
         self.cell_list = {}
         self.population_dict = {}
         self._population_counter = 0
+        self.over_populated = False
         self.grit = {}
         self.count_of_resources = 4
         self.grit['cell'] = np.zeros(size).astype(int)
-        self.grit['resources'] = np.ones((size[0], size[1], self.count_of_resources)).astype(int)    
+        #self.grit['resources'] = np.ones(((self.count_of_resources,) + size)).astype(int)    
         self.grit['cell_alive'] = np.zeros(size).astype(int)
         self.grit['gene_id'] = {}
-        self.gene_pool = np.zeros((self.size[0], self.size[1], self.size_prod)).astype(int)
-        template = np.hstack((np.arange(size[0]/2), np.arange(size[0]/2)[::-1]))
-        v = ((template - size[0] / 2) / (size[0] ) + 1).reshape(1, -1)
-        h = ((template - size[1] / 2) / (size[1] ) + 1).reshape(1, -1)
-        for r in range(self.count_of_resources):
-            self.grit['resources'][:,:,r] = (v.T @ h) * 2
+        self.gene_pool = np.zeros(((self.size_prod,) + self.size)).astype(int)
         self.extinction = False
+        
         self.random_spots = np.random.permutation(self.size_prod).reshape(self.size)
+        self.set_up_resources()
+        logging.debug('--------------------------------------------')
+        logging.debug(f'Object {self.role}::Created size:{self.size}.')
+        
+    def set_up_resources(self, phase1=0.5, phase2=0.5):
+        r = np.linspace(0, 1, size[0])
+        template_0 = (0.5 - np.abs((r) - phase1)) * 2
+        template_1 = 1 - template_0
+        template_2 = (((r) - phase2)**2)*4
+        template_3 = 1 - (((r) - phase2)**2)*4
+        mat = (template_0, template_1, template_2, template_3)
+        data = []
+        data.append((np.dot(mat[2].reshape(-1, 1), mat[1].reshape(1, -1))*255).astype(int))
+        data.append((np.dot(mat[1].reshape(-1, 1), mat[3].reshape(1, -1))*255).astype(int))
+        data.append((np.dot(mat[3].reshape(-1, 1), mat[2].reshape(1, -1))*255).astype(int))
+        data.append((np.dot(mat[0].reshape(-1, 1), mat[3].reshape(1, -1))*255).astype(int))
+        self.grit['resources'] = np.array(data).reshape(-1, self.size[0], self.size[1])
 
     def tick(self):
         population_copy = self.population_dict.copy()
@@ -39,6 +53,7 @@ class World:
         new_index = self._population_counter 
         if new_index > self.size_prod:
             print(f'World is overpopulated')
+            self.over_populated = True
             return
         #print(f'spawn1:: posiition: \n{position}')
         if position == None and parent == None:
@@ -55,17 +70,17 @@ class World:
 
     def get_new_genes(self, obj):
         new_genes = np.random.randint(255, size=self.size_prod)
+        #new_genes = np.arange(self.size_prod)
         pos = obj.position
-        self.gene_pool[pos[0], pos[1], :] = new_genes
+        self.gene_pool[:, pos[0], pos[1]] = new_genes
         return new_genes
         
         
     def get_genes(self, pos):
         #print(f'get_genes:: obj:{obj}, type:{type(obj)}')
         #logging.debug(f'Object {self.role}:: gene pos:{pos}.')
-        genes = self.gene_pool[pos[0], pos[1], :]
-        #print(f'get_genes:: genes:{genes}')
-        return genes
+        genes = self.gene_pool[:, pos[0], pos[1]]
+        return genes.T
 
     def set_genes(self, obj, genes):
         #print(f'set_genes:: obj:{obj}, type:{type(obj)}')
@@ -80,7 +95,7 @@ class World:
             genes = list(genes) + [0]*(self.size_prod-gene_len)
         else:
             genes = list(genes)
-        self.gene_pool[pos[0], pos[1], :] = genes
+        self.gene_pool[:, pos[0], pos[1]] = genes #
         
         
     def activate(self, obj):
@@ -93,8 +108,7 @@ class World:
             self.grit['gene_id'][obj.position] = obj.gene_id
             self.set_genes(obj, obj.gene_id)
 
-
-            
+iff_dict = {0: 'eat', }
 GENE_SIZE = 8        
 class Cell:
     _gene_blueprint = np.random.randint(255, size=GENE_SIZE)
@@ -105,7 +119,11 @@ class Cell:
         self.role = 'cell'
         self.index = Cell._counter
         self.food = 1 #+ np.random.randint(100, size=(1))
-        self.food_budged = (0,) * w.count_of_resources
+        self.food_delta = 0
+        self.food_share = 0 # Calculated in gauge_wellness
+        self.social_vector = np.array([0, 0, 0, 0])
+        self.social_delta = np.array([0, 0, 0, 0])
+        self.mood_factor = np.array([1,1,1,1])
         self.alive = True
         self.parent = 0                
         self.dynasty = set() # Contains all Cell indices this Cell instance originated from.
@@ -124,7 +142,6 @@ class Cell:
             self.gene_id = self._express_gene_id
             #self.gather_surrounding()
               
-            
         if from_cell:
             if isinstance(parent, Cell):
                 self.parent = parent
@@ -138,28 +155,72 @@ class Cell:
         pruned = np.delete(pruned, np.where(pruned[:, 0]>=limits[1])[0], axis=0)  # Dropping upper bounds, V
         self.surround_vector = np.delete(pruned, np.where(pruned[:, 1]>=limits[2])[0], axis=0)  # Dropping upper bounds, H
 
-        logging.debug(f'Object {self.role} created at {position}.')
+        #logging.debug(f'Object {self.role} created at {position}.')
         w.cell_list[self.index] = self
         w.activate(self)
         
     def tick(self):
         self.gather_surrounding()
+        self.gather_food()
         sensory_dict = self.process_sensory
+        self.sensory_dict = sensory_dict
+        self.gauge_wellness()
         peers_info = sensory_dict['peers_info_exchange']
         peers_food = sensory_dict['peers_food_exchange']
         potential_mates = sensory_dict['peers_mate_potential']
         potential_victims = sensory_dict['peers_eat_potential']
-        self.sensory_dict = sensory_dict
+        #logging.debug(f'Object {self.role}::{self.index} sensory_dict: {sensory_dict}.')
         if len(peers_info):
             self.share_info(peers_info)
         if len(peers_food):
-            self.share_info(peers_food)
+            self.share_food(peers_food)
         if len(potential_mates):
             self.mate(potential_mates)
         if len(potential_victims):
             self.eat(potential_victims)
+        self.grow()
             
-              
+    def gauge_wellness(self):
+        new_social_vector = np.array(list((self.get_peer_data).values()))
+        self.social_delta = new_social_vector - self.social_vector
+        self.social_vector = new_social_vector
+        food_new = np.sum(self.food_processed)
+        self.food_delta = np.arctan(food_new - self.food)
+        #logging.debug(f'Object {self.role}::{self.index} food_delta: {self.food_delta}.')
+        self.food = np.around((self.food + food_new), 2)
+        self.wellness = (self.social_delta * self.food_delta * self.mood_factor).astype(int)
+        #logging.debug(f'Object {self.role}::{self.index} wellness: {self.wellness}.')
+        self.food_share = np.around((self.food * self.food_share_factor), 2) #@property
+        self.food = np.around((self.food - self.food_share), 2)
+        assert self.food >= 0
+        #logging.debug(f'Object {self.role}::{self.index} food: {self.food}, food_share: {self.food_share}.')
+        
+        
+    def gather_food(self):
+        data = np.array(list(self.data_surrounding.values()), dtype=object)
+        data = data[np.where(data[:, 3]==0)]
+        
+        if len(data):
+            pos = data[:, 0:2].T
+            #logging.debug(f'Object-1-- {self.role}::{self.index} pos: {pos}, position:{self.position}.')
+            l1, l2 = [], []
+            l1.append(list(pos[0]) + [self.position[0]])
+            l2.append(list(pos[1]) + [self.position[1]])
+            pos = (tuple(l1), tuple(l2))
+        else:
+            pos = self.position
+        #logging.debug(f'Object {self.role}::{self.index} pos: {pos}.')
+        # Ga hier nu na w.resource ofso en ga da die vreet haal
+        mined = w.grit['resources'][:, pos[1], pos[0]] # Needs to be inspected, indexes are reversed!
+        logging.debug(f'Object {self.role}::{self.index} mined: {mined}, shape:{np.shape(mined)}.')
+        if len(np.shape(mined)) == 3:
+            mined = np.sum(mined, axis=2)
+        gene_factor = np.random.randint(255, size=4)
+        gene_factor = (gene_factor / np.sum(gene_factor)).reshape(-1,1)
+        self.food_processed = gene_factor * mined     
+        
+        
+    
     @property
     def get_peer_data(self):
         return  {'peers_info_exchange': len(self.sensory_dict['peers_info_exchange']), 
@@ -176,17 +237,38 @@ class Cell:
                 'peers_eat_potential')
         data_col_ix = (8, 9, 10, 11)
         data = np.array(list(self.data_surrounding.values()), dtype=object )
+        empty = data[np.where(data[:, 3]==0)]
+        sensory_dict['empty_spots'] = empty
         for i, k in zip(data_col_ix, keys):
-            info_ = data[np.where(data[:, i]==1)] # and data[:, 3]>0
-            info = info_[:, 3][np.where(info_[:, 3]>0)] # and data[:, 3]>0
+            info_ = data[np.where(data[:, i]==1)] # Choose relevant action column
+            info = info_[:, 3][np.where(info_[:, 3]>0)] # and discard if spot is empty.
             sensory_dict[k] = info
+        #logging.debug(f'Object {self.role}::{self.index} sensory_dict:{sensory_dict}.')
         return sensory_dict
         
         
     def grow(self):        
-        position = self.choose_position
-        w.spawn(parent=self, position=position)
-        logging.debug(f'Object {self.role}::{self.index} Grow at position:{position}.')
+        # Determine how many to grow
+        if w.over_populated:
+            return
+        genes = np.random.randint(255, size=8)/255
+        genes_fact = genes[:4]
+        genes_bias = genes[4:]
+        grow_count = 0
+        #logging.debug(f'Object {self.role}::{self.index} v1:{v}.')
+        grow_count = np.sum((self.wellness + genes_bias) * genes_fact)
+        grow_count = int(np.max((grow_count, 0.)))
+        logging.debug(f'Object {self.role}::{self.index} v3: {grow_count}.')
+        #v = np.min((v, 1.))
+        
+        #w.spawn(parent=self, position=position)
+        if grow_count:
+            position = self.choose_position(grow_count)
+            logging.debug(f'Object {self.role}::{self.index} position:{position}.')
+            if not isinstance(position, (int, float)):
+                for p in position:
+                    #logging.debug(f'Object {self.role}::{self.index} ---p:{p}.')
+                    w.spawn(parent=self, position=tuple(p))
     
     def eat(self, peer_list):
         logging.debug(f'Object {self.role}::{self.index}.')
@@ -194,13 +276,35 @@ class Cell:
     def mate(self, peer_list):
         '''Choose one of mates in peer_list based on its features such as:
         corr, food, age'''
-        print(f'mate::Object {self.role}::{self.index}:: surr:\n{self.data_surrounding}.\n')
+        if w.over_populated:
+            return
+        #print(f'mate::Object {self.role}::{self.index}:: surr:\n{self.data_surrounding}.\n')
         data = np.array(list(self.data_surrounding.values()), dtype=object )
         mate_data = data[np.where(data[:, 10])]
-        print(f'mate::Object {self.role}::{self.index}:: mate_data:\n{mate_data}.\n')
+        #print(f'mate::Object {self.role}::{self.index}:: mate_data:\n{mate_data}.\n')
         
-    def choose_position(self):
-        logging.debug(f'Object {self.role}::{self.index}.')       
+    def choose_position(self, grow_count):
+        possible_spots_all = self.sensory_dict['empty_spots']
+        #logging.debug(f'Object {self.role}::{self.index}, possible_spots_all:{possible_spots_all}.') 
+        possible_spot_count = len(possible_spots_all)
+        #logging.debug(f'Object {self.role}::{self.index}, possible_spot_count:{possible_spot_count}.')
+        possible_spots = possible_spots_all[:, 0:2]        
+        #logging.debug(f'Object {self.role}::{self.index}, possible_spots:{possible_spots}.') 
+        #if possible_spot_count == 1:
+        chosen_spots = possible_spots
+        if possible_spot_count > 1:
+            logging.debug(f'Object {self.role}::{self.index}, possible_spot_count:{possible_spot_count}.')
+            logging.debug(f'Object {self.role}::{self.index}, grow_count:{grow_count}.')
+            
+            if possible_spot_count >= grow_count:
+                chosen_indices = np.random.choice(possible_spot_count, grow_count, replace=False)
+            #logging.debug(f'Object {self.role}::{self.index}, chosen_indices:{chosen_indices}.') 
+                chosen_spots = possible_spots[chosen_indices]
+                            
+        else:
+            chosen_spots = 0
+        logging.debug(f'Object {self.role}::{self.index}, chosen_spots:{chosen_spots}.')  
+        return chosen_spots
         
     def share_info(self, peer_list):
         if isinstance(peer_list, (tuple, list, np.ndarray)) and len(peer_list):
@@ -211,15 +315,23 @@ class Cell:
             raise TypeError
         
     def share_food(self, peer_list):
-        if isinstance(peer_list, (tuple, list, np.ndarray)) and len(peer_list):           
-            collected_food = self.food            
+        if isinstance(peer_list, (tuple, list, np.ndarray)) and len(peer_list):                   
+            collected_food = self.food_share    
+            logging.debug(f'Object {self.role}::{self.index} collected_food-1: {collected_food}.')
             for c in peer_list:
-                collected_food = collected_food + w.cell_list[int(c)].food
-            collected_food = collected_food / len(peer_list)            
+                collected_food = collected_food + w.cell_list[int(c)].food_share
+            collected_food = collected_food / len(peer_list)   
+            logging.debug(f'Object {self.role}::{self.index} collected_food-2: {collected_food}.')
             for c in peer_list:
                 w.cell_list[int(c)].food = collected_food
         else:            
+            logging.error(f'Object {self.role}::{self.index} peer_list: {peer_list}.')
             raise TypeError
+            
+            
+    @property
+    def food_share_factor(self):
+        return (np.random.randint(255, size=1)) / 255
                 
 
     def gather_surrounding(self):
@@ -232,14 +344,20 @@ class Cell:
         surrounding = tuple(self.surround_vector.T)
         other_cells_indices = w.grit['cell'][surrounding]
         other_cells_genes = w.get_genes(surrounding)
+        #logging.debug(f'Object {self.role}::{self.index} other_cells_genes:{other_cells_genes}.')
         #print(f'other_cells_indices:\n{other_cells_indices}\n')
         for pos, ix, gen in zip(self.surround_vector, other_cells_indices, other_cells_genes):
             corr = self._check_gene_correlation(gen)
+            corr_byte = int((corr + 1) * 127)
             al = self.choose_actions(corr)
-            gene_ids = 0
-            corr = 0
+            gene_ids, corr = 0, 0
             data_key = tuple(pos)
-            data_val = (pos[0], pos[1], self.index, ix, self.position[0], self.position[1], corr, al[0], al[1], al[2], al[3], al[4])
+            data_val = (pos[0], pos[1], # 0, 1
+                        self.index,     # 2
+                        ix,             # 3
+                        self.position[0], self.position[1], # 4, 5
+                        corr_byte, # 6
+                        al[0], al[1], al[2], al[3], al[4]) # 7, 8, 9, 10, 11, 12
             data[data_key] = data_val
         self.data_surrounding.update(data)
 
@@ -253,25 +371,24 @@ class Cell:
         #n = len(self.gene_id)
         n = 8
         g1 = self.gene_id[:n]
-        
         g2 = other_gene[:n]
-        if np.any(g2):
-            
+        #logging.debug(f'Object {self.role}::{self.index} g1:{g1}, g2:{g2}.')
+        if np.any(g2):            
             #assert len(g1) == len(g2)
             gm1 = np.mean(g1)
             gm2 = np.mean(g2)
-
             denom = ((np.mean(g1**2) - gm1**2)**0.5) * ((np.mean(g2**2) - gm2**2)**0.5) 
+            #logging.debug(f'Object {self.role}::{self.index} denom:{denom}.')
             if denom: # This runs almost twice as fast compared to using np.corrcoef for some reason.
                 gene_id_cov = ((g1 - gm1) * (g2 - gm2) ) / denom
+                #logging.debug(f'Object {self.role}::{self.index} gene_id_cov:{gene_id_cov}.')
             else:
                 e = f'_check_gene_correlation:: Object {self.role}::{self.index}, g1:{g1}, g2:{g2}, g1:{gm1}, g2:{gm2}'  
                 #logging.error(f'Object {self.role}::{self.index} g1:{g1}, g2:{g2}, g1:{gm1}, g2:{gm2}')
                 raise ValueError(e)
             gene_id_cov = np.around(np.sum(gene_id_cov) / n, 3)
         else:
-            gene_id_cov = 0
-        
+            gene_id_cov = 0        
         #logging.debug(f'Object {self.role}::{self.index} gene corr:{gene_id_cov}.')
         return gene_id_cov
         #print(f'gene_id_cov: {gene_id_cov}')
@@ -315,13 +432,19 @@ class Cell:
         return s
 
 w = World(size=(8, 8))
-for i in range(63):
+
+for i in range(16):
     w.spawn(position='random')
 
-TEST = 2
+TEST = 32
 for t in range(TEST):
     w.tick()
 
+
+#for i in range(32):
+    #w.spawn(position='random')
+
+    
 for k, v in w.cell_list.items():
     print(v)
 
